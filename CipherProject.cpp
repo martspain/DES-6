@@ -12,6 +12,7 @@ Autores:
 
 Fecha de creación: 04/10/2020
 
+última fecha de modificación: 18/10/2020
 **********
 
 Proyecto 2: Cifrado y Descifrado de Textos DES
@@ -40,12 +41,15 @@ using namespace std;
 /*******************
 Variables globales
 *******************/
-string const fileName = "FUENTE.txt";	//Nombre del archivo fuente 								(editable)
-string keyWord = "D3f@ULT_";			//Palabra clave de cifrado predeterminada (default)			(editable)
-string cypherDone = "";					//Variable que almacenara el texto cifrado					(no editable)
-int const bufferLength = 8;				//Espacio del buffer (cuantas letras se cifran seguidas)	(¡¡¡peligroso editar!!!)
-int const threadCount = 4;				//Numero de threads utilizados								(editable)
-string round_keys[2];					//Llaves totales generadas									(no editable)
+string const initialFileName = "FUENTE.txt";												//Nombre del archivo fuente 								(editable)
+string const outputFileName = "salida.txt";													//Nombre del archivo de salida 								(editable)
+string keyWord = "0100010000110011011001100100000001010101010011000101010001011111";		//Palabra binaria clave de cifrado predeterminada(default)	(editable)
+string cypherDone = "";																		//Variable que almacenara el texto cifrado					(no editable)
+string decypherDone = "";																	//Variable que almacenara el texto descifrado				(no editable)
+int const bufferLength = 8;																	//Espacio del buffer (cuantas letras se cifran seguidas)	(¡¡¡peligroso editar!!!)
+int const threadCount = 4;																	//Numero de threads utilizados								(editable)
+string round_keys[2];																		//Llaves totales generadas									(no editable)
+bool firstDone = false;
 
 int initialPemutation[64] = {58, 50, 42, 34, 26, 18, 10, 2,
 							 60, 52, 44, 36, 28, 20, 12, 4,
@@ -58,15 +62,13 @@ int initialPemutation[64] = {58, 50, 42, 34, 26, 18, 10, 2,
 
 /*----- Variables globales compartidas -----*/
 int counter = 0;
-pthread_cond_t cola_llena, cola_vacia; 
-pthread_mutex_t mutex_forvar; 
-sem_t count_sem, barrier_sem, done_sem;
-
+pthread_mutex_t muteX;
+pthread_cond_t firstGroupPrinted;
 
 /***************************************************************
 Subrutina para leer el archivo fuente y convertirlo a un string
 ***************************************************************/
-string readFile(){
+string readFile(string fileName){
 	//Se crea el stream para leer el archivo fuente
 	ifstream fileStream(fileName,ios::in);
 	
@@ -89,7 +91,39 @@ string readFile(){
 	return result;
 }
 
-// Function to convert a number in decimal to binary
+/***********************************************
+Subrutina para convertir un string en ascii a un string en binario.
+Por ejemplo: "Hola" -> "01001000011011110110110001100001"
+***********************************************/
+string asciiToBinary(string letter){
+
+	char c;
+	int binary[8], j, times = 0;
+	vector<int> collection;
+	string result;
+
+	for (int i = 0, len = letter.size(); i < len; ++i ) {
+		c = letter[i], j = 0;
+		while ( c > 0 ) {
+			binary[j++] = c & 1;
+			c >>= 1; // bit-shift right (int divide by 2)
+		}
+		while ( j < 8 ) { // Pad with leading 0s to conform to 8-bit standard.
+			binary[j++] = 0;
+		}
+		while ( j > 0) { // Read the int array backwards.
+			collection.push_back(binary[--j]);
+		}
+	}
+	
+	for(int i=0; i<collection.size();i++){
+		result += to_string(collection[i]);
+	}
+
+	return result;
+}
+
+// Funcion para convertir un numero decimal a uno en binario
 string convertDecimalToBinary(int decimal)
 {
     string binary;
@@ -118,6 +152,7 @@ int convertBinaryToDecimal(string binary)
     }
     return decimal;
 }
+
 // Function to do a circular left shift by 1
 string shift_left_once(string key_chunk){ 
     string shifted="";  
@@ -142,6 +177,14 @@ string shift_left_twice(string key_chunk){
     return key_chunk; 
 }
 
+//Subrutina para inicializar las mutex y las condiciones
+void init() 
+{
+    pthread_mutex_init(&muteX, NULL);
+    pthread_cond_init(&firstGroupPrinted, NULL);
+}
+
+
 // Function to compute xor between two strings
 string Xor(string a, string b){ 
 	string result = ""; 
@@ -158,65 +201,9 @@ string Xor(string a, string b){
 } 
 
 
-string binaryConvert(string letter){
-
-	char c;
-	vector<int> answer;
-	string binaryCode = "";
-	int binary[bufferLength], j, times = 0;
-
-	for ( int i = 0, len = letter.size(); i < len; ++i ) {
-
-		c = letter[i], j = 0;
-
-		while ( c > 0 ) {
-
-			binary[j++] = c & 1;
-
-			c >>= 1; // bit-shift right (int divide by 2)
-
-		}
-
-		while ( j < bufferLength ) { // Pad with leading 0s to conform to 8-bit standard.
-
-			binary[j++] = 0;
-
-		}
-
-		while ( j > 0) { // Read the int array backwards.
-
-			//binaryCollection.push_back(binary[--j]);
-			answer.push_back(binary[--j]);
-
-		}
-
-		if ( ! (++times % 4) ) {
-			//Nothing
-
-		}
-
-		else {
-
-			//Nothing
-
-		}
-
-	}
-	
-	for(int i=0;i<answer.size();i++){
-		binaryCode += to_string(answer[i]);
-	}
-	
-	answer.clear();
-	
-	return binaryCode;
-	
-}
-
-
 void createKeys(){
 	
-	string key = binaryConvert(keyWord);
+	string key = asciiToBinary(keyWord);
 	// The PC1 table
     int pc1[56] = {
     57,49,41,33,25,17,9, 
@@ -278,6 +265,7 @@ Subrutina para cifrar un string de 8 caracteres (Aquí se utiliza el XOR con cad
 void *cypherText(void *argument){
 	
 	string &oldString = *(static_cast<string*>(argument));
+	oldString = asciiToBinary(oldString);
 	
 	// The initial permutation table 
     int initial_permutation[64] = { 
@@ -421,8 +409,11 @@ void *cypherText(void *argument){
     for(int i = 0; i < 64; i++){ 
         ciphertext+= combined_text[inverse_permutation[i]-1]; 
     }
-    //And we finally get the cipher text
-    cypherDone += ciphertext; 
+	
+	pthread_mutex_lock(&muteX);
+	//pthread_cond_wait(&firstGroupPrinted, &muteX);
+	cypherDone += ciphertext;
+	pthread_mutex_unlock(&muteX);
 	
 	return NULL;
 }
@@ -435,17 +426,31 @@ int main(){
 	int option;
 	string text;
 	bool active = true;
+	bool hasCypheredFirst = false;
+	string fileName = "FUENTE.txt";
 	
 	//Se lee el archivo
-	text = readFile();
+	text = readFile(fileName);
 	
-	/*
+	
 	//Se inicializan las variables de pthread, de mutex y de cond
-	pthread_t threadID;
-	pthread_mutex_init(&mutex_forvar, NULL);
-	pthread_cond_init(&cola_llena, NULL); 
-	pthread_cond_init(&cola_vacia, NULL);
-	*/
+	
+	pthread_mutex_t mutexList[threadCount]; //Se crea un array de mutex para las mutex de cada hilo
+	
+	for(int k=0;k<threadCount;k++){
+		pthread_mutex_t obj;
+		mutexList[k] = obj;
+	}
+	
+	pthread_cond_t condList[threadCount]; //Se crea un array de condiciones para las condiciones de cada hilo
+	
+	for(int l=0;l<threadCount;l++){
+		pthread_cond_t obj;
+		condList[l] = obj;
+	}
+	
+	pthread_t cypher_thread[threadCount];
+	
 	
 	//Se muestra el banner del programa.
 	cout<<"Universidad del Valle de Guatemala"<<endl;
@@ -465,6 +470,7 @@ int main(){
 				cout<<"El archivo "<<fileName<<" esta vacio."<<endl;
 			}
 			else{
+				hasCypheredFirst = true;
 				cypherDone = "";			//Se vacía el texto cifrado en caso deseen repetir el proceso
 				string temporary = "";		//Variable que sirve para separar el texto
 				int letterGroups;			//Cantidad de grupos de 8 caracteres que se formaran a partir del texto
@@ -481,7 +487,7 @@ int main(){
 					cout<<endl;
 					
 					if(password.length() == bufferLength){
-						keyWord = password;
+						keyWord = asciiToBinary(password);
 						incorrect = false;
 					}
 					else{
@@ -543,13 +549,7 @@ int main(){
 				/***********************************************************************************************
 				Se deben crear las llaves que se utilizaran en la encriptación.
 				***********************************************************************************************/
-				
-				
-				
-				
-				
-				
-				
+				createKeys();
 				
 				/***********************************************************************************************
 				Se asigna un grupo de 8 caracteres a cada thread hasta que se agoten los grupos de 8 caracteres.
@@ -558,13 +558,35 @@ int main(){
 				while(stack.size()>0){
 					for(int j=0;j<threadCount && stack.size()>0;j++){
 						
+						muteX = mutexList[j];
+						firstGroupPrinted = condList[j];
+						
+						init();
+						
 						temporary = stack.front();
 						stack.erase(stack.begin());
 
 						//operate temporary
-						string temporalCode = binaryConvert(temporary);
+						//string temporalCode = asciiToBinary(temporary);
 						
 						//SE DEBE LLAMAR A LA FUNCION DE CIFRADO
+						rc = pthread_create(&cypher_thread[j],NULL,cypherText,static_cast<void*>(&temporary));
+						usleep(1000);
+						
+						//Se verifica que no hubo errores
+						if(rc){
+							printf("ERROR; return code from pthread_create() is %d\n", rc);
+							exit(-1);
+						}
+						
+						//Se espera a que el thread termine
+						rc = pthread_join(cypher_thread[j], NULL);
+						
+						//Se verifica que no hubo errores
+						if(rc){
+							printf("ERROR; return code from pthread_join() is %d\n", rc);
+							exit(-1);
+						}
 						
 						
 					}
@@ -573,36 +595,187 @@ int main(){
 				
 				cout<<endl;
 				
-				/*
+				
 				//**********************************************************
 				//Se crea el archivo de salida y se escribe el texto cifrado
-				ofstream outFile("salida.bin",ios::binary);
+				ofstream outFile(outputFileName,ios::out);
 				if(!outFile)
 				{
-					cerr<<"Error al crear salida.bin"<<endl;
+					cerr<<"Error al crear "<<outputFileName<<endl;
 					exit(EXIT_FAILURE);
 				}
 				outFile<<cypherDone;
 				//**********************************************************
-				*/
+				
 				
 			}
 			//Si sobrevive hasta aca, la operación fue exitosa
 			cout<<"El texto se ha cifrado exitosamente."<<endl;
 		}
-		else if(option == 2){
+		else if(option == 2 && hasCypheredFirst){
 			string desPassword;
+			decypherDone = "";			//Se vacía el texto cifrado en caso deseen repetir el proceso
+			string temporary = "";		//Variable que sirve para separar el texto
+			int letterGroups;			//Cantidad de grupos de 8 caracteres que se formaran a partir del texto
+			int a = 0; 					//Contador de las 8 letras
+			int rept;					//Contador de las repeticiones (1-8)
+			
 			cout<<"Por favor, ingrese la contraseña para iniciar el descifrado: ";
 			cin>>desPassword;
 			cout<<endl;
 			
-			if(desPassword == keyWord){
+			if(asciiToBinary(desPassword) == keyWord){
 				//Se descifra el texto de "salida.bin"
+				string text_two = readFile(outputFileName);
+				
+				if(text==""){
+					cout<<"El archivo "<<outputFileName<<" esta vacio. Debe cifrar el texto antes de descifrarlo."<<endl;
+				}
+				else{
+					//Se determina cuantos grupos de caracteres se crearan a partir del tamaño del buffer definido
+					if(((text.length())%bufferLength)>0){
+						letterGroups = (int)(text.length()/bufferLength)+1;
+					}
+					else{
+						letterGroups = (int)(text.length()/bufferLength);
+					}
+					
+					//Se crea el array de la longitud de cantidad de grupos de 8 caracteres
+					string collection [letterGroups];
+					decypherDone = asciiToBinary(text);
+					
+					//Se recorre el texto y se separa en sus respectivos grupos, los cuales se almacenan en collection
+					for(int i=0;i<letterGroups;i++){
+						rept = 0;
+						
+						//Si se estan comparando las últimas letras esto asegura que no va a sobrepasar el limite del texto (out of bounds prevention)
+						if((a+bufferLength-1)>(text.length()-1)){
+							while(rept < bufferLength && (a+rept)<(text.length()-1)){
+								temporary += text[a+rept];
+								rept++;
+							}
+						}
+						
+						//Si se comparan las letras de cualquier otra parte del texto se pueden separar normalmente
+						else{
+							while(rept < bufferLength){
+								temporary += text[a+rept];
+								rept++;
+							}
+						}
+						
+						collection[i] = temporary;
+						a+=bufferLength;
+						temporary = "";
+					}
+					
+					/******************************************************************************************************
+					IMPORTANTE: EN ESTE PUNTO, TODOS LOS GRUPOS DE "BufferLength" CARACTERES ESTAN EN EL ARRAY "COLLECTION"
+					*******************************************************************************************************/
+					
+					//Se crea un vector con los grupos de caracteres (STACK)
+					vector<string> stack;
+					for(int i=0;i<letterGroups;i++){
+						stack.push_back(collection[i]);
+					}
+					
+					//Se crean las llaves en caso de no haberse creado y se invierten para descifrar
+					string x, y, z;
+					x = round_keys[0];
+					y = round_keys[1];
+					z = round_keys[2];
+					
+					round_keys[0] = z;
+					round_keys[1] = y;
+					round_keys[2] = x;
+					
+					/*********************************************************************************
+					Se reinicia la variable donde se almacenara el texto descifrado
+					*********************************************************************************/
+					cypherDone = "";
+					
+					/***********************************************************************************************
+					Se asigna un grupo de 8 caracteres a cada thread hasta que se agoten los grupos de 8 caracteres.
+					Para ello se utiliza la estructura de datos "stack" a través de un vector.
+					***********************************************************************************************/
+					while(stack.size()>0){
+						for(int j=0;j<threadCount && stack.size()>0;j++){
+							
+							muteX = mutexList[j];
+							firstGroupPrinted = condList[j];
+						
+							init();
+							
+							temporary = stack.front();
+							stack.erase(stack.begin());
+
+							//operate temporary
+							//string temporalCode = asciiToBinary(temporary);
+							
+							//SE DEBE LLAMAR A LA FUNCION DE CIFRADO
+							rc = pthread_create(&cypher_thread[j],NULL,cypherText,static_cast<void*>(&temporary));
+							usleep(1000);
+							
+							//Se verifica que no hubo errores
+							if(rc){
+								printf("ERROR; return code from pthread_create() is %d\n", rc);
+								exit(-1);
+							}
+							
+							//Se espera a que el thread termine
+							rc = pthread_join(cypher_thread[j], NULL);
+							
+							//Se verifica que no hubo errores
+							if(rc){
+								printf("ERROR; return code from pthread_join() is %d\n", rc);
+								exit(-1);
+							}
+							
+							
+						}
+					}
+					//********************************************************/
+					
+					cout<<"El texto descifrado en binario es el siguiente: "<<endl;
+					
+					int newBuffer, extras = 0, reptCounter = 0, lineCounter = 0;
+					if((decypherDone.size())%bufferLength == 0){
+						newBuffer = decypherDone.size()/bufferLength;
+					}
+					else{
+						extras = (decypherDone.size())%bufferLength;
+						newBuffer = ((decypherDone.size()-((decypherDone.size())%bufferLength))/bufferLength)+1;
+					}
+					
+					for(int i=0;i<decypherDone.size() && newBuffer>0;i++){
+						cout<<decypherDone[i];
+						reptCounter++;
+						
+						if(reptCounter == bufferLength){
+							cout<<" ";
+							lineCounter++;
+							reptCounter = 0;
+						}
+						if(lineCounter == bufferLength){
+							cout<<endl;
+							lineCounter = 0;
+						}
+						
+					}
+					cout<<endl;
+					cout<<"Que se traduce a : \n"<<text<<endl;
+					
+				}
+				
 			}
 			else{
 				cout<<"CONTRASEÑA INCORRECTA. SI OLVIDO LA CONTRASEÑA DEBERA REINICIAR EL PROGRAMA."<<endl;
 			}
 		}
+		else if(option == 2 && !hasCypheredFirst){
+			cout<<"Debe cifrar antes de descifrar..."<<endl;
+		}
+		
 		//Si se elige salir del programa...
 		else if(option == 3){
 			cout<<"Gracias por utilizar el programa. ¡Vuelva pronto!"<<endl;
